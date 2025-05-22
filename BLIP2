@@ -1,0 +1,71 @@
+# Hugging Face Transformers & 기타 의존성 설치
+!pip install -q transformers accelerate bitsandbytes
+!pip install -q git+https://github.com/huggingface/transformers.git
+!pip install -q git+https://github.com/huggingface/peft.git
+!pip install -q git+https://github.com/huggingface/huggingface_hub.git
+
+import os
+from PIL import Image
+from datetime import datetime
+import torch
+from transformers import InstructBlipProcessor, InstructBlipForConditionalGeneration
+import pandas as pd
+from google.colab import files
+
+# 이미지 업로드
+uploaded = files.upload()
+image_paths = list(uploaded.keys())
+
+# GPU 사용 여부 확인
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"사용 중인 디바이스: {device}")
+
+# InstructBLIP 모델 불러오기 (FP16 + 자동 디바이스 매핑)
+processor = InstructBlipProcessor.from_pretrained("Salesforce/instructblip-vicuna-7b")
+model = InstructBlipForConditionalGeneration.from_pretrained(
+    "Salesforce/instructblip-vicuna-7b",
+    torch_dtype=torch.float16,
+    device_map="auto"
+)
+model.eval()
+
+# 결과 저장 리스트
+results = []
+
+# 이미지 처리 루프
+for image_path in image_paths:
+    image_name = os.path.basename(image_path)
+    try:
+        image = Image.open(image_path).convert("RGB")
+        image = image.resize((384, 384))  # 모델 입력 크기
+    except Exception as e:
+        print(f"이미지 열기 실패: {image_name}, 오류: {e}")
+        continue
+
+    # 현재 시간 기록 (파일 생성시간은 Colab에서 불가)
+    creation_datetime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    # 프롬프트 정의
+    prompt = "You are a helpful AI assistant. Describe this image in detail."
+
+    # 입력 구성 및 디바이스 이동
+    inputs = processor(images=image, text=prompt, return_tensors="pt").to(model.device, torch.float16)
+
+    # 설명 생성
+    with torch.no_grad():
+        output = model.generate(**inputs, max_new_tokens=100)
+        description = processor.batch_decode(output, skip_special_tokens=True)[0]
+
+    # 결과 저장
+    results.append({
+        "Filename": image_name,
+        "Capture Time": creation_datetime,
+        "Description": description
+    })
+
+# 결과 DataFrame 출력
+df = pd.DataFrame(results)
+df
+
+df.to_csv("instructblip_results.csv", index=False)
+files.download("instructblip_results.csv")
